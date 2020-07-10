@@ -84,7 +84,7 @@ struct sched_attr {
 	/* SCHED_NORMAL, SCHED_BATCH */
 	int32_t sched_nice;
 
-	/* SCHED_FIFO, SCHED_RR */
+	/* SCHED_FIFO, SCHED_RR, SCHED_MICROQ */
 	uint32_t sched_priority;
 
 	/* SCHED_DEADLINE (nsec) */
@@ -110,6 +110,13 @@ static int sched_getattr(pid_t pid, struct sched_attr *attr, unsigned int size, 
  */
 #if defined (__linux__) && !defined(SCHED_DEADLINE) && defined(HAVE_SCHED_SETATTR)
 # define SCHED_DEADLINE 6
+#endif
+
+/* the SCHED_MICROQ is proposed by Xi Wang
+ * https://lkml.org/lkml/2019/9/6/177
+ */
+#if defined (__linux__) && !defined(SCHED_MICROQ)
+# define SCHED_MICROQ 7
 #endif
 
 /* control struct */
@@ -149,6 +156,7 @@ static void __attribute__((__noreturn__)) usage(void)
 	fputs(_(" -i, --idle           set policy to SCHED_IDLE\n"), out);
 	fputs(_(" -o, --other          set policy to SCHED_OTHER\n"), out);
 	fputs(_(" -r, --rr             set policy to SCHED_RR (default)\n"), out);
+	fputs(_(" -q, --microq         set policy to SCHED_MICROQ\n"), out);
 
 	fputs(USAGE_SEPARATOR, out);
 	fputs(_("Scheduling options:\n"), out);
@@ -197,6 +205,10 @@ static const char *get_policy_name(int policy)
 #ifdef SCHED_DEADLINE
 	case SCHED_DEADLINE:
 		return "SCHED_DEADLINE";
+#endif
+#ifdef SCHED_MICROQ
+	case SCHED_MICROQ:
+		return "SCHED_MICROQ";
 #endif
 	default:
 		break;
@@ -271,10 +283,27 @@ fallback:
 		printf("|SCHED_RESET_ON_FORK");
 	putchar('\n');
 
-	if (ctl->altered)
-		printf(_("pid %d's new scheduling priority: %d\n"), pid, prio);
-	else
-		printf(_("pid %d's current scheduling priority: %d\n"), pid, prio);
+#ifdef SCHED_MICROQ
+	if (policy == SCHED_MICROQ) {
+		if (ctl->altered)
+			printf(_("pid %d's new runtime/period parameters: %d/%d\n"),
+					pid,
+					(prio & 0xffff) == 0xffff ? -1 : (prio & 0xffff),
+					(prio >> 16) == 0xffff ? -1 : (prio >> 16));
+		else
+			printf(_("pid %d's current runtime/period parameters: %d/%d\n"),
+					pid,
+					(prio & 0xffff) == 0xffff ? -1 : (prio & 0xffff),
+					(prio >> 16) == 0xffff ? -1 : (prio >> 16));
+	} else
+#else
+	{
+		if (ctl->altered)
+			printf(_("pid %d's new scheduling priority: %d\n"), pid, prio);
+		else
+			printf(_("pid %d's current scheduling priority: %d\n"), pid, prio);
+	}
+#endif
 
 #ifdef SCHED_DEADLINE
 	if (policy == SCHED_DEADLINE) {
@@ -321,6 +350,9 @@ static void show_min_max(void)
 #endif
 #ifdef SCHED_DEADLINE
 		SCHED_DEADLINE,
+#endif
+#ifdef SCHED_MICROQ
+		SCHED_MICROQ,
 #endif
 	};
 
@@ -424,6 +456,7 @@ int main(int argc, char **argv)
 		{ "all-tasks",  no_argument, NULL, 'a' },
 		{ "batch",	no_argument, NULL, 'b' },
 		{ "deadline",   no_argument, NULL, 'd' },
+		{ "microq",     no_argument, NULL, 'q' },
 		{ "fifo",	no_argument, NULL, 'f' },
 		{ "idle",	no_argument, NULL, 'i' },
 		{ "pid",	no_argument, NULL, 'p' },
@@ -445,7 +478,7 @@ int main(int argc, char **argv)
 	textdomain(PACKAGE);
 	close_stdout_atexit();
 
-	while((c = getopt_long(argc, argv, "+abdD:fiphmoP:T:rRvV", longopts, NULL)) != -1)
+	while((c = getopt_long(argc, argv, "+abdqD:fiphmoP:T:rRvV", longopts, NULL)) != -1)
 	{
 		switch (c) {
 		case 'a':
@@ -460,6 +493,11 @@ int main(int argc, char **argv)
 		case 'd':
 #ifdef SCHED_DEADLINE
 			ctl->policy = SCHED_DEADLINE;
+#endif
+			break;
+		case 'q':
+#ifdef SCHED_MICROQ
+			ctl->policy = SCHED_MICROQ;
 #endif
 			break;
 		case 'f':
@@ -549,8 +587,9 @@ int main(int argc, char **argv)
 #endif
 	if (ctl->pid == -1)
 		ctl->pid = 0;
-	if (ctl->priority < sched_get_priority_min(ctl->policy) ||
-	    sched_get_priority_max(ctl->policy) < ctl->priority)
+	if (ctl->policy != SCHED_MICROQ &&
+	    (ctl->priority < sched_get_priority_min(ctl->policy) ||
+	     sched_get_priority_max(ctl->policy) < ctl->priority))
 		errx(EXIT_FAILURE,
 		     _("unsupported priority value for the policy: %d: see --max for valid range"),
 		     ctl->priority);
